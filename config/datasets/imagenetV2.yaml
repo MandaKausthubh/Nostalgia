@@ -1,0 +1,9 @@
+name: imagenetv2
+source: imagenetv2_pytorch
+root: data/imagenetV2
+train_split: train
+val_split: test
+num_classes: 1000
+image_size: 224
+batch_size: 64
+num_workers: 2

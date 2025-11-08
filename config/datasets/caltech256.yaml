@@ -1,0 +1,10 @@
+name: caltech256
+source: torchvision
+root: data/caltech256
+epochs: 10
+train_split: train
+val_split: test
+num_classes: 256
+image_size: 224
+batch_size: 64
+num_workers: 8
