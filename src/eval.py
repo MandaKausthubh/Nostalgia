@@ -22,6 +22,7 @@ import sys
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 from models.resnet import ResNetModel
+from models.vit import ViTModel
 from models.baseModel import BaseModel
 from src.data_module import ImageNetDataModule
 from src.model_soups_utils import uniform_soup, greedy_soup, load_checkpoint_state_dict
@@ -164,6 +165,15 @@ def eval(cfg: DictConfig) -> None:
         soup_cfg = cfg.eval.soup
         checkpoint_paths = soup_cfg.checkpoint_paths
         
+        # Determine model class
+        model_type = cfg.model.get("type", "resnet")
+        if model_type == "resnet":
+            model_class = ResNetModel
+        elif model_type == "vit":
+            model_class = ViTModel
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+        
         # Create model
         model_kwargs = {
             "model_name": cfg.model.name,
@@ -210,7 +220,7 @@ def eval(cfg: DictConfig) -> None:
         dev_loader = dataloaders.get("imagenet1k")  # Use ID as dev for greedy
         results = evaluate_soup(
             checkpoint_paths,
-            ResNetModel,
+            model_class,
             model_kwargs,
             dataloaders,
             device,
@@ -224,11 +234,20 @@ def eval(cfg: DictConfig) -> None:
         print(f"Loading checkpoint: {checkpoint_path}")
         ckpt = torch.load(checkpoint_path, map_location=device)
         
-        # Create model
-        model = ResNetModel(
-            model_name=cfg.model.name,
-            use_lora=cfg.model.get("use_lora", False),
-        )
+        # Determine model class
+        model_type = cfg.model.get("type", "resnet")
+        if model_type == "resnet":
+            model = ResNetModel(
+                model_name=cfg.model.name,
+                use_lora=cfg.model.get("use_lora", False),
+            )
+        elif model_type == "vit":
+            model = ViTModel(
+                model_name=cfg.model.name,
+                use_lora=cfg.model.get("use_lora", False),
+            )
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
         
         # Load weights
         if isinstance(ckpt, dict):

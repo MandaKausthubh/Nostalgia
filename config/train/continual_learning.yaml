@@ -1,0 +1,40 @@
+# Continual Learning Configuration
+# This extends default.yaml for multi-task continual learning experiments
+
+defaults:
+  - default
+
+train:
+  continual_learning: true
+  num_tasks: 5  # Number of tasks in the continual learning stream
+  epochs_per_task: 10  # Epochs to train on each task
+  save_task_checkpoints: true  # Save checkpoint at end of each task
+  max_epochs: null  # Override: will be computed as num_tasks * epochs_per_task
+  
+  # Checkpoint naming for tasks
+  task_checkpoint_prefix: "task"  # Checkpoints will be named task-{task_id}-{method}-...
+  
+  # Evaluation after each task
+  eval_after_task: true  # Evaluate on all tasks after each new task
+  compute_forgetting: true  # Compute forgetting matrix
+
+# Task-specific datasets (if using different datasets per task)
+# If tasks are not specified, all tasks will use the same dataset from cfg.dataset.name
+tasks:
+  - name: task1
+    dataset: imagenet1k
+  - name: task2
+    dataset: imagenetv2
+  - name: task3
+    dataset: imagenet-a
+  - name: task4
+    dataset: imagenet-r
+  - name: task5
+    dataset: imagenet-sketch
+  # For different datasets per task, specify:
+  # - name: task1
+  #   dataset: imagenet1k
+  # - name: task2
+  #   dataset: imagenetv2
+  # etc.
+

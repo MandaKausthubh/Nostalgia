@@ -1,4 +1,5 @@
 model:
+  type: resnet
   name: microsoft/resnet-50
   use_lora: false
   lora:

@@ -8,7 +8,8 @@ defaults:
 train:
   method: full_ft  # Options: full_ft, lora, nostalgia_global, nostalgia_layerwise
   batch_size: 32
-  max_epochs: 100
+  max_epochs: 100  # Total epochs for single-task training
+  epochs_per_task: null  # Epochs per task for continual learning (null = use max_epochs)
   num_workers: 4
   lr: 1e-4
   weight_decay: 0.01
@@ -19,6 +20,11 @@ train:
   devices: auto
   precision: 32
   distributed: false
+  
+  # Continual learning parameters
+  continual_learning: false  # Enable continual learning with multiple tasks
+  num_tasks: 1  # Number of tasks for continual learning
+  save_task_checkpoints: true  # Save checkpoint at end of each task
   
   # Checkpointing
   checkpoint_dir: checkpoints
