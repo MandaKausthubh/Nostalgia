@@ -1,4 +1,4 @@
-# Nostalgia Experiments - ICML Submission
+# Nostalgia
 
 Implementation of Nostalgia experiments for continual learning and robustness evaluation, including:
 
