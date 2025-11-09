@@ -2,6 +2,7 @@
 defaults:
   - model: resnet50
   - dataset: imagenet1k
+  - visualize: default
 
 # Evaluation parameters
 eval:

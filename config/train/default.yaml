@@ -3,6 +3,7 @@ defaults:
   - model: resnet50
   - dataset: imagenet1k
   - logger: tensorboard
+  - visualize: default
 
 # Training parameters
 train:

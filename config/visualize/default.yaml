@@ -1,0 +1,17 @@
+visualize:
+  enabled: true
+  save_dir: logs/plots
+  save_formats: ["png", "pdf"]
+  log_to_wandb: true
+  log_to_tensorboard: true
+  
+  # Which plots to generate
+  plots:
+    forgetting_vs_steps: true
+    forgetting_heatmap: true
+    task_retention_curves: true
+    method_comparison_bar: true
+    id_ood_scatter: true
+    hessian_spectra: true
+    ablation_curves: true
+

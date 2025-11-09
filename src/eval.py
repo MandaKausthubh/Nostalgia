@@ -26,6 +26,7 @@ from models.vit import ViTModel
 from models.baseModel import BaseModel
 from src.data_module import ImageNetDataModule
 from src.model_soups_utils import uniform_soup, greedy_soup, load_checkpoint_state_dict
+from src.visualize import plot_id_ood_scatter, plot_method_comparison_bar
 
 
 def evaluate_model(
@@ -319,6 +320,42 @@ def eval(cfg: DictConfig) -> None:
         print(f"\nAverage OOD Accuracy: {avg_ood_acc:.4f}")
         print(f"ID Accuracy: {id_acc:.4f}")
         print(f"ID→OOD Gap: {gap:.4f}")
+    
+    # Generate visualizations if enabled
+    if cfg.get("visualize", {}).get("enabled", False):
+        print("\nGenerating evaluation visualizations...")
+        visualize_cfg = cfg.visualize
+        save_dir = visualize_cfg.get("save_dir", "logs/plots")
+        os.makedirs(save_dir, exist_ok=True)
+        
+        plots_cfg = visualize_cfg.get("plots", {})
+        
+        # Plot ID vs OOD scatter
+        if plots_cfg.get("id_ood_scatter", True):
+            # Prepare eval_metrics dict
+            eval_metrics = {}
+            id_acc = results.get("imagenet1k", {}).get("accuracy", 0.0) * 100  # Convert to percentage
+            avg_ood_acc = np.mean([m["accuracy"] for m in ood_results.values()]) * 100 if ood_results else 0.0
+            
+            # Determine method name from checkpoint or config
+            method_name = cfg.eval.get("method_name", "Current Method")
+            if cfg.eval.get("soup", {}).get("enabled", False):
+                soup_type = cfg.eval.soup.get("type", "uniform")
+                method_name = f"ModelSoup-{soup_type.capitalize()}"
+            else:
+                method_name = cfg.model.get("type", "resnet").upper()
+            
+            eval_metrics[method_name] = (id_acc, avg_ood_acc)
+            
+            plot_id_ood_scatter(
+                eval_metrics,
+                save_dir,
+                wandb_logger=None,  # Can be added if wandb is used in eval
+                tensorboard_writer=None,
+                global_step=0,
+            )
+        
+        print(f"Evaluation visualizations saved to {save_dir}")
 
 
 if __name__ == "__main__":
