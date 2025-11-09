@@ -11,7 +11,6 @@ ResNetLoraConfig = LoraConfig(
     target_modules=["layer4", "layer3"],
     lora_dropout=0.1,
     bias="none",
-    task_type="IMAGE_CLASSIFICATION",
 )
 
 
