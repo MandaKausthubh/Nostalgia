@@ -1,0 +1,10 @@
+model:
+  name: microsoft/resnet-50
+  use_lora: false
+  lora:
+    r: 8
+    lora_alpha: 32
+    target_modules: ["layer4", "layer3"]
+    lora_dropout: 0.1
+    bias: "none"
+

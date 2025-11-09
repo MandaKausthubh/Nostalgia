@@ -1,0 +1,11 @@
+logger:
+  tensorboard:
+    enabled: true
+    save_dir: logs
+    name: default
+  
+  wandb:
+    enabled: false
+    project: nostalgia-experiments
+    name: null
+

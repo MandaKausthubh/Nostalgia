@@ -1,0 +1,25 @@
+# Default evaluation configuration
+defaults:
+  - model: resnet50
+  - dataset: imagenet1k
+
+# Evaluation parameters
+eval:
+  checkpoint_path: null  # Path to checkpoint to evaluate
+  batch_size: 32
+  num_workers: 4
+  
+  # OOD datasets to evaluate on
+  ood_datasets:
+    - imagenetv2
+    - imagenet-a
+    - imagenet-r
+    - imagenet-sketch
+    - objectnet
+  
+  # Model soup evaluation
+  soup:
+    enabled: false
+    type: uniform  # Options: uniform, greedy
+    checkpoint_paths: []  # List of checkpoint paths for soup
+

@@ -1,0 +1,44 @@
+# Default training configuration
+defaults:
+  - model: resnet50
+  - dataset: imagenet1k
+  - logger: tensorboard
+
+# Training parameters
+train:
+  method: full_ft  # Options: full_ft, lora, nostalgia_global, nostalgia_layerwise
+  batch_size: 32
+  max_epochs: 100
+  num_workers: 4
+  lr: 1e-4
+  weight_decay: 0.01
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  log_every_n_steps: 10
+  accelerator: auto
+  devices: auto
+  precision: 32
+  distributed: false
+  
+  # Checkpointing
+  checkpoint_dir: checkpoints
+  save_top_k: 5
+  run_test: true
+  
+  # Nostalgia-specific parameters
+  num_eigenthings: 100  # For global Nostalgia
+  num_eigenthings_per_layer: 50  # For layer-wise Nostalgia
+  power_iter_steps: 20
+  recompute_null_space_every: 1  # Recompute null space every N epochs
+  layer_names: null  # For layer-wise: list of layer names, null = all layers
+  
+  # Learning rate scheduler
+  scheduler:
+    type: cosine  # Options: cosine, step, null
+    eta_min: 0.0
+    step_size: 30
+    gamma: 0.1
+
+# Random seed
+seed: 42
+

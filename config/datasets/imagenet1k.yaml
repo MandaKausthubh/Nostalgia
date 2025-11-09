@@ -1,0 +1,5 @@
+dataset:
+  name: imagenet1k
+  data_dir: ~/data
+  image_size: 224
+
