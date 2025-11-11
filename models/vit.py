@@ -1,151 +1,294 @@
-from typing import Optional, Dict, Any
-from .baseModel import BaseModel
-from peft import LoraConfig
 import torch
+from torch import Tensor
+from typing import Dict, Optional, Callable, List, Tuple, cast
+from .baseModel import BaseModel 
+
+try:
+    from hessian_eigenthings import compute_hessian_eigenthings
+except Exception as e:
+    compute_hessian_eigenthings = None
+    _hessian_import_error = e
 
 
-# ViT LoRA config - target attention and MLP layers
-ViTLoraConfig = LoraConfig(
-    r=8,
-    lora_alpha=32,
-    target_modules=["query", "key", "value", "dense"],  # Attention and MLP layers
-    lora_dropout=0.1,
-    bias="none",
-    task_type="IMAGE_CLASSIFICATION",
-)
+# -----------------------
+# Utility helpers
+# -----------------------
+def flatten_tensors(tensors: List[torch.Tensor]) -> torch.Tensor:
+    return torch.cat([t.reshape(-1) for t in tensors], dim=0)
+
+def unflatten_to(flat: torch.Tensor, templates: List[torch.Tensor]) -> List[torch.Tensor]:
+    out = []
+    idx = 0
+    for t in templates:
+        n = t.numel()
+        out.append(flat[idx: idx + n].view_as(t))
+        idx += n
+    return out
+
+def build_projection_from_U(U: torch.Tensor) -> Callable[[torch.Tensor], torch.Tensor]:
+    """
+    U: (n_params, r) orthonormal columns (torch.Tensor)
+    returns proj_fn(g_flat) -> g_proj_flat
+    """
+    # ensure U is float32/float64 same as grads
+    def proj_fn(g_flat: torch.Tensor) -> torch.Tensor:
+        # coeff = U^T g
+        coeff = U.T @ g_flat
+        return g_flat - (U @ coeff)
+    return proj_fn
 
 
+# -----------------------
+# ViTModel
+# -----------------------
 class ViTModel(BaseModel):
-    """Vision Transformer (ViT) wrapper that extends BaseModel.
-    
-    Supports ViT models from Hugging Face transformers library.
-    - Uses the [CLS] token output for classification
-    - Supports LoRA fine-tuning via PEFT
+    """
+    ViT model subclass that supports Hessian-based null-space projection
+    for continual fine-tuning (Algorithm 2) and a layer-wise variant (Algorithm 3).
     """
 
     def __init__(
         self,
         model_name: str = "google/vit-base-patch16-224",
         use_lora: bool = False,
-        lora_config: Optional[LoraConfig] = ViTLoraConfig,
+        lora_config = None,
+        freeze_backbone: bool = False,
+        dataset_name: Optional[str] = None,
         num_classes: Optional[int] = None,
     ):
-        super().__init__(model_name, use_lora, lora_config)
-        self.num_classes = num_classes
-        
-        # ViT models from transformers typically have a classifier head
-        # If num_classes is specified and different from model's, replace it
-        if num_classes is not None and hasattr(self.backbone, 'classifier'):
-            if hasattr(self.backbone.classifier, 'out_features'):
-                if self.backbone.classifier.out_features != num_classes:
-                    in_features = self.backbone.classifier.in_features
-                    self.backbone.classifier = torch.nn.Linear(
-                        in_features, num_classes
-                    )
+        super().__init__(
+            model_name=model_name,
+            use_lora=use_lora,
+            lora_config=lora_config,
+            freeze_backbone=freeze_backbone,
+        )
 
-    def _get_logits_from_backbone(self, outputs: Any) -> torch.Tensor:
-        """Extract logits from ViT model outputs."""
-        # ViT models typically return logits directly
-        if hasattr(outputs, "logits") and outputs.logits is not None:
-            return outputs.logits
-        
-        # Some ViT variants return last_hidden_state and we need to extract [CLS] token
-        if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
-            last_hidden_state = outputs.last_hidden_state
-            # [CLS] token is typically the first token (index 0)
-            cls_token = last_hidden_state[:, 0, :]  # [batch_size, hidden_size]
-            
-            # If classifier exists, use it
-            if hasattr(self.backbone, 'classifier'):
-                return self.backbone.classifier(cls_token)
+        # manual optimization to allow custom grad projection before optimizer.step()
+        self.automatic_optimization = False
+
+        # register/activate head if provided
+        if dataset_name and num_classes:
+            self.register_head(dataset_name, num_classes)
+            self.set_active_head(dataset_name)
+
+        # store last computed bases
+        self.global_U: Optional[torch.Tensor] = None       # shape (n_params, r)
+        self.layerwise_U: Dict[str, torch.Tensor] = {}     # prefix -> U
+
+    # -----------------------
+    # Trainable params helper
+    # -----------------------
+    def get_trainable_params(self) -> List[torch.Tensor]:
+        """
+        Return list of parameters that are trainable (requires_grad==True)
+        Typically this will be LoRA adapter params if backbone frozen.
+        """
+        return [p for p in self.parameters() if p.requires_grad]
+
+    # -----------------------
+    # Hessian-based projections (global)
+    # -----------------------
+    def _compute_projection_global(
+        self,
+        batch: Dict[str, torch.Tensor],
+        k: int = 16,
+    ) -> Callable[[torch.Tensor], torch.Tensor]:
+        """
+        Build a projection function using top-k Hessian eigenvectors using hessian_eigenthings.
+        Uses the single incoming batch to approximate the Hessian operator (you can change this).
+        """
+        if compute_hessian_eigenthings is None:
+            raise ImportError(
+                "hessian_eigenthings not available. Install it with "
+                "'pip install hessian-eigenthings' (or check its API). "
+                f"Original import error: {_hessian_import_error}"
+            )
+
+        params = self.get_trainable_params()
+        if len(params) == 0:
+            # nothing to project
+            return lambda g: g
+
+        device = next(self.parameters()).device
+
+        # Wrap the single batch into a tiny dataloader-like list of (inputs, labels)
+        # compute_hessian_eigenthings expects a dataloader; many implementations accept an iterable.
+        single_loader = [(
+            batch["images"].to(device),
+            batch["labels"].to(device)
+        )]
+
+        # call the library function - signature may vary between versions; adapt if necessary
+        # we assume it returns (eigenvals, eigenvecs) where eigenvecs is (n_params, k)
+        _, eigenvecs = compute_hessian_eigenthings(
+            model=self,
+            dataloader=single_loader,
+            loss=self.criterion,
+            num_eigenthings=k,
+            params=params
+        )
+        eigenvecs = torch.Tensor(eigenvecs)
+
+        # ensure eigenvecs is a torch tensor on the right device
+        U = eigenvecs.to(device)
+
+        # store basis
+        self.global_U = U
+        return build_projection_from_U(U)
+
+    # -----------------------
+    # Layer-wise variant
+    # -----------------------
+    def _compute_projection_layerwise(
+        self,
+        batch: Dict[str, torch.Tensor],
+        k: int = 8,
+    ) -> Dict[str, Callable[[torch.Tensor], torch.Tensor]]:
+        """
+        Build per-layer projection functions. We group trainable parameters by top-level prefix in their name.
+        Returns dict: prefix -> projection_fn.
+        Also caches U in self.layerwise_U[prefix].
+        """
+        if compute_hessian_eigenthings is None:
+            raise ImportError(
+                "hessian_eigenthings not available. Install it with "
+                "'pip install hessian-eigenthings' (or check its API)."
+            )
+
+        device = next(self.parameters()).device
+        named_trainable = [(n, p) for n, p in self.named_parameters() if p.requires_grad]
+        if not named_trainable:
+            return {}
+
+        # group by prefix (customize grouping logic if desired)
+        groups: Dict[str, List[Tuple[str, torch.Tensor]]] = {}
+        for n, p in named_trainable:
+            prefix = n.split('.')[0]
+            groups.setdefault(prefix, []).append((n, p))
+
+        single_loader = [(
+            batch["images"].to(device),
+            batch["labels"].to(device)
+        )]
+
+        projections: Dict[str, Callable[[torch.Tensor], torch.Tensor]] = {}
+        for prefix, name_param_list in groups.items():
+            params = [p for _, p in name_param_list]
+            n_params = sum(p.numel() for p in params)
+            if n_params == 0:
+                continue
+
+            num_eig = min(k, n_params)
+            _, eigenvecs = compute_hessian_eigenthings(
+                model=self,
+                dataloader=single_loader,
+                loss=self.criterion,
+                num_eigenthings=num_eig,
+                params=params
+            )
+            eigenvecs = torch.Tensor(eigenvecs)
+            U = eigenvecs.to(device)
+            self.layerwise_U[prefix] = U
+            projections[prefix] = build_projection_from_U(U)
+
+        return projections
+
+    # -----------------------
+    # Apply projection to gradients
+    # -----------------------
+    def _apply_projection_to_grads(
+            self,
+            proj_fn: Callable[[torch.Tensor], torch.Tensor],
+            params: List[torch.Tensor]) -> None:
+        """
+        Flatten grads of `params`, project using proj_fn, and write back to each param.grad.
+        """
+        device = next(self.parameters()).device
+        grads = []
+        for p in params:
+            if p.grad is None:
+                grads.append(torch.zeros_like(p))
             else:
-                # Fallback: return CLS token (might need a classifier head)
-                return cls_token
-        
-        # Pooler output if available
-        if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-            pooler_output = outputs.pooler_output
-            if hasattr(self.backbone, 'classifier'):
-                return self.backbone.classifier(pooler_output)
-            return pooler_output
-        
-        # If outputs is a tensor
-        if isinstance(outputs, torch.Tensor):
-            return outputs
-        
-        # Try tuple/list
-        try:
-            if isinstance(outputs, (tuple, list)) and len(outputs) > 0:
-                first = outputs[0]
-                if isinstance(first, torch.Tensor):
-                    # If it's a sequence, take [CLS] token
-                    if first.ndim == 3:
-                        cls_token = first[:, 0, :]
-                        if hasattr(self.backbone, 'classifier'):
-                            return self.backbone.classifier(cls_token)
-                        return cls_token
-                    return first
-        except Exception:
-            pass
+                grads.append(p.grad.detach())
+        flat = flatten_tensors(grads).to(device)
+        flat_proj = proj_fn(flat)
+        new_grads = unflatten_to(flat_proj, grads)
+        for p, ng in zip(params, new_grads):
+            p.grad = ng
 
-        raise RuntimeError("Unable to extract logits from ViT model outputs")
+    # -----------------------
+    # Training step (manual optimization)
+    # -----------------------
+    def training_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        batch_idx: int,
+        projection: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        mode: str = 'global',
+        k: int = 16,
+        **kwargs
+    ):
+        """
+        Main training_step implementing Algorithm 2 / Algorithm 3 projection.
 
-    def forward(self, pixel_values, labels: Optional[torch.Tensor] = None, **kwargs) -> Dict[str, Any]:
-        """Forward pass through ViT model."""
-        # Prepare inputs using the processor
-        inputs = self.processor(images=pixel_values, return_tensors="pt")
-        device = next(self.backbone.parameters()).device
-        
-        # Move inputs to device
-        for k, v in inputs.items():
-            if isinstance(v, torch.Tensor):
-                inputs[k] = v.to(device)
+        Args:
+            projection: optional user-supplied projection callable (flat -> flat).
+            mode: 'global' or 'layerwise'
+            k: top-k eigenvectors to compute
+        """
+        # get optimizer (Lightning API: this module must have optimizer(s) configured)
+        optim = self.optimizers()
+        if isinstance(optim, (list, tuple)):
+            optim = optim[0]
+        optim.zero_grad()
 
-        no_grad = kwargs.get("no_grad", False)
-        if no_grad:
-            with torch.no_grad():
-                outputs = self.backbone(**inputs)
+        device = next(self.parameters()).device
+        imgs = batch["images"].to(device)
+        labels = batch["labels"].to(device)
+
+        # forward + loss
+        out = self.forward(pixel_values=imgs, labels=labels)
+        loss = out["loss"]
+
+        # backward -> fills .grad for trainable params
+        self.manual_backward(loss)
+
+        trainable_params = self.get_trainable_params()
+        if projection is not None:
+            # user-supplied projection
+            self._apply_projection_to_grads(projection, trainable_params)
         else:
-            outputs = self.backbone(**inputs)
+            if mode == 'global':
+                proj_fn = self._compute_projection_global(batch, k=k)
+                self._apply_projection_to_grads(proj_fn, trainable_params)
+            elif mode == 'layerwise':
+                projections = self._compute_projection_layerwise(batch, k=k//2 if k>4 else k)
+                # apply per-group projections
+                name_to_param = {n: p for n, p in self.named_parameters() if p.requires_grad}
+                for prefix, proj in projections.items():
+                    group_params = [p for n, p in name_to_param.items() if n.split('.')[0] == prefix]
+                    if group_params:
+                        self._apply_projection_to_grads(proj, cast(List[Tensor], group_params))
+            else:
+                raise ValueError("mode must be 'global' or 'layerwise'")
 
-        logits = self._get_logits_from_backbone(outputs)
+        # optimizer step
+        optim.step()
 
-        result: Dict[str, Any] = {"logits": logits}
-        if labels is not None:
-            labels = labels.to(device)
-            loss = self.criterion(logits, labels)
-            result["loss"] = loss
-
-        return result
-
-    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int, **kwargs) -> torch.Tensor:
-        """Training step for ViT model."""
-        pixel_values = batch.get("pixel_values") or batch.get("images") or batch.get("image")
-        labels = batch.get("labels") or batch.get("label") or batch.get("targets")
-
-        out = self.forward(pixel_values, labels=labels)
-        loss = out.get("loss")
-        if loss is None:
-            logits = out["logits"]
-            loss = self.criterion(logits, labels.to(logits.device))
-
-        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+        # logging
+        self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=True)
         return loss
 
-    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int, **kwargs) -> None:
-        """Validation step for ViT model."""
-        pixel_values = batch.get("pixel_values") or batch.get("images") or batch.get("image")
-        labels = batch.get("labels") or batch.get("label") or batch.get("targets")
-
-        out = self.forward(pixel_values, labels=labels, no_grad=True)
-        logits = out["logits"]
-        loss = out.get("loss")
-        if loss is None:
-            loss = self.criterion(logits, labels.to(logits.device))
-
-        preds = torch.argmax(logits, dim=1)
-        acc = (preds == labels.to(logits.device)).float().mean()
-
-        self.log("val_loss", loss, prog_bar=True, on_epoch=True)
-        self.log("val_acc", acc, prog_bar=True, on_epoch=True)
-
+    # -----------------------
+    # Validation step
+    # -----------------------
+    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int, **kwargs):
+        imgs = batch["images"].to(next(self.parameters()).device)
+        labels = batch["labels"].to(next(self.parameters()).device)
+        out = self.forward(pixel_values=imgs, labels=labels)
+        loss = out["loss"]
+        preds = torch.argmax(out["logits"], dim=1)
+        acc = (preds == labels).float().mean()
+        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_acc", acc, prog_bar=True)
+        return {"val_loss": loss, "val_acc": acc}

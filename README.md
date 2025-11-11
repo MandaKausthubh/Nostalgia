@@ -31,7 +31,7 @@ git clone https://github.com/mlfoundations/model-soups.git third_party/model-sou
 
 Ensure your datasets are organized as follows:
 
-```
+```bash
 ~/data/
 ├── imagenet/
 │   ├── train/
