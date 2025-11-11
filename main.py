@@ -27,7 +27,7 @@ DATASET_REGISTRY = {
 }
 
 # -------------------------------------------------------
-# Utilities
+# Utility functions
 # -------------------------------------------------------
 def build_projection_from_U(U: torch.Tensor):
     def proj_fn(g_flat: torch.Tensor) -> torch.Tensor:
@@ -38,6 +38,7 @@ def build_projection_from_U(U: torch.Tensor):
 
 @torch.no_grad()
 def evaluate_accuracy(model, dataloader):
+    """Computes top-1 accuracy on a given dataloader."""
     model.eval()
     device = next(model.parameters()).device
     correct, total = 0, 0
@@ -57,60 +58,57 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    pl.seed_everything(seed)
+    pl.seed_everything(seed, workers=True)
+
 
 # -------------------------------------------------------
-# Argparser + YAML loader
+# Config loader
 # -------------------------------------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Nostalgia Sequential Experiment Runner")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
-    parser.add_argument("--override_epochs", type=int, default=None, help="Force same epochs for all tasks")
+    parser.add_argument("--override_epochs", type=int, default=None, help="Override epochs for all tasks")
     return parser.parse_args()
 
 
 def load_config(path: str):
     with open(path, "r") as f:
-        cfg = yaml.safe_load(f)
-    return cfg
+        return yaml.safe_load(f)
+
 
 # -------------------------------------------------------
-# Main experiment
+# Main Experiment
 # -------------------------------------------------------
 def main():
     args = parse_args()
     cfg = load_config(args.config)
 
-    set_seed(cfg.get("seed", 42))
+    set_seed(cfg["experiment"].get("seed", 42))
 
+    # Setup run name and loggers
     run_name = f"{cfg['experiment']['run_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     project_name = cfg["experiment"]["project_name"]
 
-    # Logger setup
     loggers = []
     if cfg["experiment"].get("use_wandb", True):
         loggers.append(WandbLogger(project=project_name, name=run_name))
     if cfg["experiment"].get("use_tensorboard", True):
         loggers.append(TensorBoardLogger(save_dir="logs/tb", name=run_name))
 
-    trainer = pl.Trainer(
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=1,
-        max_epochs=1,  # will override per task
-        logger=loggers,
-        log_every_n_steps=10,
-        enable_checkpointing=False,
-    )
-
-    # -------------------- Model ------------------------
+    # ---------------------------------------------------
+    # Model selection
+    # ---------------------------------------------------
     model_type = cfg["model"]["type"].lower()
     if model_type == "vit":
         model = ViTModel(model_name=cfg["model"]["name"], freeze_backbone=cfg["model"]["freeze_backbone"])
     else:
         model = ResNetModel(model_name=cfg["model"]["name"], freeze_backbone=cfg["model"]["freeze_backbone"])
+
     model.setup_logging(run_name)
 
-    # -------------------- Load datasets ------------------------
+    # ---------------------------------------------------
+    # Datasets
+    # ---------------------------------------------------
     datasets = {}
     for task in cfg["tasks"]:
         DClass = DATASET_REGISTRY[task["dataset_class"]]
@@ -121,11 +119,13 @@ def main():
             "num_classes": dataset.metadata["num_classes"],
         }
 
-    # Register heads for all datasets
+    # Register heads
     for name, d in datasets.items():
         model.register_head(name, d["num_classes"])
 
-    # -------------------- Sequential training ------------------------
+    # ---------------------------------------------------
+    # Sequential Training
+    # ---------------------------------------------------
     baseline_accs = {}
     hessian_bases = {}
     past_tasks = {}
@@ -138,11 +138,11 @@ def main():
         epochs = args.override_epochs or task["epochs"]
 
         print(f"\n🚀 Task {name} | nostalgia={nostalgia} | epochs={epochs}")
-
         model.set_active_head(name)
-        trainer.max_epochs = epochs
 
-        # ----------------- Set projection -----------------
+        # ------------------------------------------------
+        # Projection setup (Nostalgia)
+        # ------------------------------------------------
         proj_fn = None
         if nostalgia:
             if isinstance(hsrc, list):
@@ -154,40 +154,68 @@ def main():
                 proj_fn = build_projection_from_U(U_src)
         model.set_projection(proj_fn)
 
-        # ----------------- Train -----------------
-        trainer.fit(model, datasets[name]["train"], datasets[name]["val"])
+        # ------------------------------------------------
+        # Create per-task Trainer
+        # ------------------------------------------------
+        trainer_task = pl.Trainer(
+            accelerator="gpu" if torch.cuda.is_available() else "cpu",
+            devices=1,
+            max_epochs=epochs,
+            logger=loggers,
+            log_every_n_steps=10,
+            enable_checkpointing=False,
+        )
 
-        # ----------------- Evaluate -----------------
+        # ------------------------------------------------
+        # Train
+        # ------------------------------------------------
+        trainer_task.fit(model, datasets[name]["train"], datasets[name]["val"])
+
+        # ------------------------------------------------
+        # Evaluate current task
+        # ------------------------------------------------
         acc = evaluate_accuracy(model, datasets[name]["val"])
         baseline_accs[name] = acc
-        model.log_metrics_to_json({f"id_acc_{name}": acc}, epoch=trainer.current_epoch)
+        model.log_metrics_to_json({f"id_acc_{name}": acc}, epoch=trainer_task.current_epoch)
         print(f"✅ Validation accuracy ({name}): {acc:.4f}")
 
-        # ----------------- Compute Hessian -----------------
+        # ------------------------------------------------
+        # Compute Hessian (for next Nostalgia projection)
+        # ------------------------------------------------
         print(f"📊 Computing Hessian for {name} ...")
         model._compute_projection_global(next(iter(datasets[name]["train"])), k=k_lanczos)
         hessian_bases[name] = model.global_U.clone().detach()
 
-        # ----------------- Representation retention -----------------
+        # ------------------------------------------------
+        # Evaluate representation retention on previous tasks
+        # ------------------------------------------------
         if past_tasks:
-            repr_accs = model.evaluate_representation_retention(past_tasks)
+            repr_accs = model.evaluate_retention(past_tasks)
             repr_forgets = model.compute_representation_forgetting(
                 baseline_accs={k: baseline_accs[k] for k in past_tasks},
-                current_accs={k: repr_accs[f"repr_acc_{k}"] for k in past_tasks if f"repr_acc_{k}" in repr_accs}
+                current_accs={
+                    k: repr_accs[f"repr_acc_{k}"]
+                    for k in past_tasks
+                    if f"repr_acc_{k}" in repr_accs
+                },
             )
             print("🧠 Representation Forgetting:", repr_forgets)
 
+        # Mark task as completed
         past_tasks[name] = datasets[name]
 
-    # -------------------- Final summary ------------------------
+    # ---------------------------------------------------
+    # Final Summary
+    # ---------------------------------------------------
     id_acc_final = baseline_accs[list(baseline_accs.keys())[-1]]
     summary = summarize_metrics(
         id_acc=id_acc_final,
         ood_accs=list(baseline_accs.values())[:-1],
         forgetting_values=[],
         model=model,
-        epoch_time=trainer.estimated_stepping_batches,
+        epoch_time=trainer_task.estimated_stepping_batches, # pyright: ignore[reporrUnboundVariable]
     )
+
     model.log_metrics_to_json(summary)
     print("\n✅ Final Summary:", summary)
     print("Logs saved at:", model.metrics_file)
