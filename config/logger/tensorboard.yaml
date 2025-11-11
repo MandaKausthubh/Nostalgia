@@ -5,7 +5,7 @@ logger:
     name: default
   
   wandb:
-    enabled: false
+    enabled: true
     project: nostalgia-experiments
     name: null
 

@@ -223,9 +223,6 @@ class ViTModel(BaseModel):
         self,
         batch: Dict[str, torch.Tensor],
         batch_idx: int,
-        projection: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-        mode: str = 'global',
-        k: int = 16,
         **kwargs
     ):
         """
@@ -236,46 +233,27 @@ class ViTModel(BaseModel):
             mode: 'global' or 'layerwise'
             k: top-k eigenvectors to compute
         """
-        # get optimizer (Lightning API: this module must have optimizer(s) configured)
-        optim = self.optimizers()
-        if isinstance(optim, (list, tuple)):
-            optim = optim[0]
-        optim.zero_grad()
+        # manual optimization
+        opt = self.optimizers()
+        if isinstance(opt, (list, tuple)):
+            opt = opt[0]
+        opt.zero_grad()
 
+        imgs, labels = batch["images"], batch["labels"]
         device = next(self.parameters()).device
-        imgs = batch["images"].to(device)
-        labels = batch["labels"].to(device)
+        imgs, labels = imgs.to(device), labels.to(device)
 
-        # forward + loss
         out = self.forward(pixel_values=imgs, labels=labels)
         loss = out["loss"]
-
-        # backward -> fills .grad for trainable params
         self.manual_backward(loss)
 
         trainable_params = self.get_trainable_params()
-        if projection is not None:
-            # user-supplied projection
-            self._apply_projection_to_grads(projection, trainable_params)
-        else:
-            if mode == 'global':
-                proj_fn = self._compute_projection_global(batch, k=k)
-                self._apply_projection_to_grads(proj_fn, trainable_params)
-            elif mode == 'layerwise':
-                projections = self._compute_projection_layerwise(batch, k=k//2 if k>4 else k)
-                # apply per-group projections
-                name_to_param = {n: p for n, p in self.named_parameters() if p.requires_grad}
-                for prefix, proj in projections.items():
-                    group_params = [p for n, p in name_to_param.items() if n.split('.')[0] == prefix]
-                    if group_params:
-                        self._apply_projection_to_grads(proj, cast(List[Tensor], group_params))
-            else:
-                raise ValueError("mode must be 'global' or 'layerwise'")
 
-        # optimizer step
-        optim.step()
+        # 🔹 apply projection if set
+        if hasattr(self, "projection_fn") and self.projection_fn is not None:
+            self._apply_projection_to_grads(self.projection_fn, trainable_params)
 
-        # logging
+        opt.step()
         self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=True)
         return loss
 
@@ -292,3 +270,10 @@ class ViTModel(BaseModel):
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
         return {"val_loss": loss, "val_acc": acc}
+
+
+
+
+
+
+
