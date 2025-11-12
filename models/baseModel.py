@@ -4,6 +4,7 @@ from datetime import datetime
 from abc import abstractmethod
 from typing import Any, Dict, Optional, cast, Tuple, Union, Callable, List
 import torch
+from torch._prims_common import Tensor
 import torch.nn as nn
 import pytorch_lightning as pl
 from transformers import AutoImageProcessor, AutoModel, AutoConfig, PreTrainedModel
@@ -320,7 +321,7 @@ class BaseModel(pl.LightningModule):
     def _apply_projection_to_grads(
             self,
             proj_fn: Callable[[torch.Tensor], torch.Tensor],
-            params: List[TensorOrParam]
+            params: List[Union[Tensor, nn.Parameter]]
         ) -> None:
             """
             Flatten grads of `params`, project using proj_fn, and write back to param.grad.
