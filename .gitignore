@@ -16,3 +16,5 @@ outputs/
 PROMPT.md
 PROMPT_VISUALISATIONS.md
 ./config/
+./data/
+./logs/

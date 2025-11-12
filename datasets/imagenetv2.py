@@ -1,35 +1,49 @@
-import os
-from glob import glob
+from imagenetv2_pytorch import ImageNetValDataset, ImageNetV2Dataset
 from .baseDataset import BaseDataset
+from sklearn.model_selection import train_test_split
+from PIL import Image
 
-class ImageNetV2Dataset(BaseDataset):
-    def __init__(self, root: str, split: str = "train", transform=None):
-        super().__init__(root=root, transform=transform, name=f"ImageNetV2-{split}", split=split)
-        self._load_split()
+# Create an index mapping for ImageNetV2 dataset splits (90:10 for train and validation)
+def create_imagenetv2_split_indices(samples, train_ratio=0.9):
+    train_samples, val_samples = train_test_split(
+        samples, test_size=1 - train_ratio, stratify=[s[1] for s in samples]
+    )
+    return train_samples, val_samples
 
-    def _get_split_dir(self):
-        split_dirs = {
-            "train": "ImageNetV2-matched-frequency",
-            "val": "ImageNetV2-threshold0.7-val",
-            "test": "ImageNetV2-top-0.7"
+class ImageNetV2Wrapper(BaseDataset):
+    def __init__(self, root: str, split: str = "train", transform=None, train_split_ratio: float = 0.9):
+        """
+        Wrapper around ImageNetValDataset and ImageNetV2Dataset from imagenetv2_pytorch.
+
+        Args:
+            root (str): Root directory for the dataset.
+            split (str): Dataset split to use ("train", "val", or "test").
+            transform: Transformations to apply to the dataset.
+            train_split_ratio (float): Ratio for splitting ImageNetV2 into train and validation.
+        """
+        super().__init__(root=root, transform=transform, name=f"ImageNetV2-{split}", split=split, train_split_ratio=train_split_ratio)
+
+        if split == "train" or split == "val":
+            full_dataset = ImageNetV2Dataset(root=root, transform=self.transform)
+            train_samples, val_samples = create_imagenetv2_split_indices(full_dataset.samples, train_ratio=train_split_ratio)
+            self.samples = train_samples if split == "train" else val_samples
+            self.classes = full_dataset.classes
+        elif split == "test":
+            test_dataset = ImageNetValDataset(root=root, transform=self.transform)
+            self.samples = test_dataset.samples
+            self.classes = test_dataset.classes
+        else:
+            raise ValueError("Invalid split. Choose from 'train', 'val', or 'test'.")
+
+        self.metadata["num_classes"] = len(self.classes)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index: int):
+        path, label = self.samples[index]
+        return {
+            "images": self.transform(Image.open(path).convert("RGB")),
+            "labels": label,
+            "paths": path
         }
-        if self.split not in split_dirs:
-            raise ValueError(f"Unknown split '{self.split}'. Expected one of {list(split_dirs.keys())}")
-        return os.path.join(self.root, split_dirs[self.split])
-
-    def _load_split(self):
-        split_dir = self._get_split_dir()
-        if not os.path.isdir(split_dir):
-            raise FileNotFoundError(f"Split directory not found: {split_dir}")
-
-        class_dirs = sorted([d for d in os.listdir(split_dir) if os.path.isdir(os.path.join(split_dir, d))])
-        self._set_classes(class_dirs)
-
-        samples = []
-        for cls in class_dirs:
-            img_dir = os.path.join(split_dir, cls)
-            imgs = glob(os.path.join(img_dir, "*.jpeg")) + glob(os.path.join(img_dir, "*.JPEG"))
-            label = self.class_to_idx[cls]
-            samples.extend([(img, label) for img in imgs])
-
-        self.samples = samples

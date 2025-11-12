@@ -12,7 +12,8 @@ from datetime import datetime
 # -------------------------------------------------------
 from models.vit import ViTModel
 from models.resnet import ResNetModel
-from datasets.ImagenetV2 import ImageNetV2Dataset
+from datasets.ImageNetV2 import ImageNetV2Dataset
+from datasets.ImageNetV2 import ImageNetV2Wrapper
 from datasets.TinyImageNet import TinyImageNetDataset
 from datasets.ImagenetODD import ImageNetODataset
 from metrics.metrics import summarize_metrics
@@ -25,6 +26,11 @@ DATASET_REGISTRY = {
     "TinyImageNetDataset": TinyImageNetDataset,
     "ImageNetODataset": ImageNetODataset,
 }
+
+# Update the dataset registry to use the wrapper class
+DATASET_REGISTRY.update({
+    "ImageNetV2Dataset": ImageNetV2Wrapper,
+})
 
 # -------------------------------------------------------
 # Utility functions
