@@ -24,12 +24,12 @@ class ImageNetV2Wrapper(BaseDataset):
         super().__init__(root=root, transform=transform, name=f"ImageNetV2-{split}", split=split, train_split_ratio=train_split_ratio)
 
         if split == "train" or split == "val":
-            full_dataset = ImageNetV2Dataset(root=root, transform=self.transform)
+            full_dataset = ImageNetV2Dataset(location=root, transform=self.transform)
             train_samples, val_samples = create_imagenetv2_split_indices(full_dataset.samples, train_ratio=train_split_ratio)
             self.samples = train_samples if split == "train" else val_samples
             self.classes = full_dataset.classes
         elif split == "test":
-            test_dataset = ImageNetValDataset(root=root, transform=self.transform)
+            test_dataset = ImageNetValDataset(location=root, transform=self.transform)
             self.samples = test_dataset.samples
             self.classes = test_dataset.classes
         else:
