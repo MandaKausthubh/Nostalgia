@@ -1,0 +1,37 @@
+experiment:
+  run_name: nostalgia_vit_seq
+  project_name: Nostalgia_Vision
+  use_wandb: true
+  use_tensorboard: true
+  seed: 42
+
+model:
+  type: vit
+  name: google/vit-base-patch16-224
+  freeze_backbone: false
+
+training:
+  batch_size: 32
+  k_lanczos: 16
+
+tasks:
+  - name: imagenet_v2
+    dataset_class: ImageNetV2Dataset
+    root: data/imagenet_v2
+    epochs: 10
+    nostalgia: false
+
+  - name: tinyimagenet
+    dataset_class: TinyImageNetDataset
+    root: data/tiny-imagenet-200
+    epochs: 10
+    nostalgia: true
+    hessian_source: imagenet_v2
+
+  - name: imagenet_odd
+    dataset_class: ImageNetODataset
+    root: data/imagenet_odd
+    list_file: data/imagenet_odd_list.txt
+    epochs: 10
+    nostalgia: true
+    hessian_source: [imagenet_v2, tinyimagenet]
