@@ -2,13 +2,31 @@ from imagenetv2_pytorch import ImageNetValDataset, ImageNetV2Dataset
 from .baseDataset import BaseDataset
 from sklearn.model_selection import train_test_split
 from PIL import Image
+import json
+import os
 
-# Create an index mapping for ImageNetV2 dataset splits (90:10 for train and validation)
-def create_imagenetv2_split_indices(samples, train_ratio=0.9):
+# Create and save randomized indices for train and validation splits
+def save_split_indices(root, train_ratio=0.9, split_file="imagenetv2_splits.json"):
+    full_dataset = ImageNetV2Dataset(location=root)
+    full_samples = [(i, full_dataset[i]["labels"]) for i in range(len(full_dataset))]
     train_samples, val_samples = train_test_split(
-        samples, test_size=1 - train_ratio, stratify=[s[1] for s in samples]
+        full_samples, test_size=1 - train_ratio, stratify=[s[1] for s in full_samples]
     )
-    return train_samples, val_samples
+    split_indices = {
+        "train": [s[0] for s in train_samples],
+        "val": [s[0] for s in val_samples]
+    }
+    split_path = os.path.join(root, split_file)
+    with open(split_path, "w") as f:
+        json.dump(split_indices, f)
+    print(f"Split indices saved to {split_path}")
+    return split_indices
+
+# Load split indices from file
+def load_split_indices(root, split_file="imagenetv2_splits.json"):
+    split_path = os.path.join(root, split_file)
+    with open(split_path, "r") as f:
+        return json.load(f)
 
 class ImageNetV2Wrapper(BaseDataset):
     def __init__(self, root: str, split: str = "train", transform=None, train_split_ratio: float = 0.9):
@@ -24,13 +42,14 @@ class ImageNetV2Wrapper(BaseDataset):
         super().__init__(root=root, transform=transform, name=f"ImageNetV2-{split}", split=split, train_split_ratio=train_split_ratio)
 
         if split == "train" or split == "val":
+            split_indices = load_split_indices(root)
             full_dataset = ImageNetV2Dataset(location=root, transform=self.transform)
-            train_samples, val_samples = create_imagenetv2_split_indices(full_dataset.samples, train_ratio=train_split_ratio)
-            self.samples = train_samples if split == "train" else val_samples
+            selected_indices = split_indices[split]
+            self.samples = [(full_dataset[i]["paths"], full_dataset[i]["labels"]) for i in selected_indices]
             self.classes = full_dataset.classes
         elif split == "test":
             test_dataset = ImageNetValDataset(location=root, transform=self.transform)
-            self.samples = test_dataset.samples
+            self.samples = [(test_dataset[i]["paths"], test_dataset[i]["labels"]) for i in range(len(test_dataset))]
             self.classes = test_dataset.classes
         else:
             raise ValueError("Invalid split. Choose from 'train', 'val', or 'test'.")
