@@ -1,85 +1,63 @@
 import os
-import glob
-from PIL import Image
-from typing import Any, Dict, List, Optional, Tuple
-from torch.utils.data import Dataset
+from glob import glob
 from .baseDataset import BaseDataset
 
 class TinyImageNetDataset(BaseDataset):
-    """
-    TinyImageNet dataset loader.
-    Compatible with the standard directory structure:
-        tiny-imagenet-200/train/
-        tiny-imagenet-200/val/
-    """
-
-    def __init__(
-        self,
-        root: str,
-        split: str = "train",
-        transform=None,
-        target_transform=None,
-        preload: bool = False,
-    ):
-        assert split in ("train", "val"), f"Invalid split: {split}"
-        self.split = split
-        super().__init__(
-            data_root=os.path.join(root, split),
-            transform=transform,
-            target_transform=target_transform,
-            preload=preload,
-        )
+    def __init__(self, root: str, split: str = "train", transform=None):
+        super().__init__(root=root, transform=transform, name=f"TinyImageNet-{split}", split=split)
+        self._load_metadata()
+        self._load_split()
 
     def _load_metadata(self):
-        if self.split == "train":
-            self._load_train_metadata()
+        wnid_file = os.path.join(self.root, "wnids.txt")
+        if not os.path.exists(wnid_file):
+            raise FileNotFoundError(f"Missing wnids.txt at {wnid_file}")
+        with open(wnid_file, "r") as f:
+            wnids = [line.strip() for line in f if line.strip()]
+        self._set_classes(wnids)
+
+    def _load_split(self):
+        if self.split in ["train", "val"]:
+            samples = self._load_train_samples()
+            train_samples, val_samples = self._train_val_split(samples)
+            if self.split == "train":
+                self.samples = train_samples
+            else:
+                self.samples = val_samples
+
+        elif self.split == "test":
+            self.samples = self._load_val_samples()  # TinyImageNet "val" folder acts as test
         else:
-            self._load_val_metadata()
+            raise ValueError(f"Unknown split: {self.split}")
 
-    def _load_train_metadata(self):
-        """
-        Loads paths and labels for the training split.
-        """
-        class_dirs = sorted([d for d in os.listdir(self.data_root) if os.path.isdir(os.path.join(self.data_root, d))])
-        class_to_idx = {cls_name: i for i, cls_name in enumerate(class_dirs)}
+    def _load_train_samples(self):
+        samples = []
+        train_dir = os.path.join(self.root, "train")
+        for wnid in self.classes:
+            img_dir = os.path.join(train_dir, wnid, "images")
+            imgs = glob(os.path.join(img_dir, "*.JPEG")) + glob(os.path.join(img_dir, "*.jpg"))
+            label = self.class_to_idx[wnid]
+            samples.extend([(img, label) for img in imgs])
+        return samples
 
-        for cls_name in class_dirs:
-            img_dir = os.path.join(self.data_root, cls_name, "images")
-            for img_path in glob.glob(os.path.join(img_dir, "*.JPEG")):
-                self.samples.append((img_path, class_to_idx[cls_name]))
+    def _load_val_samples(self):
+        val_dir = os.path.join(self.root, "val", "images")
+        val_annotations = os.path.join(self.root, "val", "val_annotations.txt")
+        if not os.path.exists(val_annotations):
+            raise FileNotFoundError(f"Missing val_annotations.txt at {val_annotations}")
 
-        self.metadata["classes"] = class_dirs
-        self.metadata["class_to_idx"] = class_to_idx
-
-    def _load_val_metadata(self):
-        """
-        Loads paths and labels for the validation split.
-        The labels are in val_annotations.txt.
-        """
-        ann_file = os.path.join(self.data_root, "val_annotations.txt")
-        img_dir = os.path.join(self.data_root, "images")
-
-        # Parse annotation file
-        img_to_cls = {}
-        with open(ann_file, "r") as f:
-            for line in f.readlines():
+        img_to_label = {}
+        with open(val_annotations, "r") as f:
+            for line in f:
                 parts = line.strip().split("\t")
-                img_name, cls_name = parts[0], parts[1]
-                img_to_cls[img_name] = cls_name
+                if len(parts) >= 2:
+                    fname, wnid = parts[0], parts[1]
+                    img_to_label[fname] = self.class_to_idx[wnid]
 
-        # Create mapping
-        classes = sorted(set(img_to_cls.values()))
-        class_to_idx = {cls_name: i for i, cls_name in enumerate(classes)}
-
-        # Build sample list
-        for img_name, cls_name in img_to_cls.items():
-            img_path = os.path.join(img_dir, img_name)
-            self.samples.append((img_path, class_to_idx[cls_name]))
-
-        self.metadata["classes"] = classes
-        self.metadata["class_to_idx"] = class_to_idx
-
-    def _load_sample(self, idx: int) -> Tuple[Any, int]:
-        img_path, label = self.samples[idx]
-        img = Image.open(img_path).convert("RGB")
-        return img, label
+        samples = []
+        for img_path in glob(os.path.join(val_dir, "*.JPEG")):
+            fname = os.path.basename(img_path)
+            if fname in img_to_label:
+                label = img_to_label[fname]
+                samples.append((img_path, label))
+        return samples

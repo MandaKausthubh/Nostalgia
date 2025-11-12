@@ -1,64 +1,64 @@
+# datasets/base_dataset.py
+import os
+import torch
 from torch.utils.data import Dataset
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from torchvision import transforms
+from PIL import Image
+from typing import Dict, Any, Optional
+from sklearn.model_selection import train_test_split
+
 
 class BaseDataset(Dataset):
     """
-    Generic base class for all datasets.
+    Unified dataset base class for Nostalgia experiments.
+    Provides consistent output and metadata structure.
     """
 
     def __init__(
         self,
-        data_root: str,
-        transform: Optional[Callable] = None,
-        target_transform: Optional[Callable] = None,
-        preload: bool = False,
+        root: str,
+        transform: Optional[Any] = None,
+        name: str = "BaseDataset",
+        split: Optional[str] = None,
+        train_split_ratio: float = 0.9
     ):
-        self.data_root = data_root
-        self.transform = transform
-        self.target_transform = target_transform
-        self.preload = preload
-        self.samples: List[Any] = []  # list of (input, target)
-        self.metadata: Dict[str, Any] = {}
+        super().__init__()
+        self.root = root
+        self.split = split
+        self.train_split_ratio = train_split_ratio
+        self.transform = transform or transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ])
 
-        self._load_metadata()
+        self.metadata: Dict[str, Any] = {
+            "name": name,
+            "num_classes": None
+        }
 
-        if self.preload:
-            self._preload_data()
-
-    def _load_metadata(self):
-        """
-        Loads or constructs metadata (e.g. file paths, labels, splits).
-        To be implemented by subclasses.
-        """
-        raise NotImplementedError
-
-    def _preload_data(self):
-        """
-        Optionally preload all data into memory.
-        Override this for large datasets if needed.
-        """
-        self.samples = [self._load_sample(idx) for idx in range(len(self))]
-
-    def _load_sample(self, idx: int) -> Tuple[Any, Any]:
-        """
-        Load a single sample given its index.
-        Must be implemented by subclasses.
-        """
-        raise NotImplementedError
+        self.samples: list = []   # list of (path, label)
+        self.classes: list = []   # all class names
 
     def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx: int):
-        if self.preload:
-            data, target = self.samples[idx]
-        else:
-            data, target = self._load_sample(idx)
-
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        path, label = self.samples[index]
+        image = Image.open(path).convert("RGB")
         if self.transform:
-            data = self.transform(data)
-        if self.target_transform:
-            target = self.target_transform(target)
-        return data, target
+            image = self.transform(image)
+        return {
+            "images": image,
+            "labels": torch.tensor(label, dtype=torch.long),
+            "paths": path
+        }
 
+    def _set_classes(self, classes: list):
+        self.classes = classes
+        self.class_to_idx = {c: i for i, c in enumerate(classes)}
+        self.metadata["num_classes"] = len(classes)
 
+    def _train_val_split(self, samples):
+        """Split samples into train/val using ratio."""
+        train, val = train_test_split(samples, test_size=1 - self.train_split_ratio, stratify=[s[1] for s in samples])
+        return train, val
