@@ -8,7 +8,7 @@ import os
 # Create and save randomized indices for train and validation splits
 def save_split_indices(root, train_ratio=0.9, split_file="imagenetv2_splits.json"):
     full_dataset = ImageNetV2Dataset(location=root)
-    full_samples = [(i, full_dataset[i]["labels"]) for i in range(len(full_dataset))]
+    full_samples = [(i, full_dataset[i][2]) for i in range(len(full_dataset))]
     train_samples, val_samples = train_test_split(
         full_samples, test_size=1 - train_ratio, stratify=[s[1] for s in full_samples]
     )
@@ -27,6 +27,7 @@ def load_split_indices(root, split_file="imagenetv2_splits.json"):
     split_path = os.path.join(root, split_file)
     with open(split_path, "r") as f:
         return json.load(f)
+
 
 class ImageNetV2Wrapper(BaseDataset):
     def __init__(self, root: str, split: str = "train", transform=None, train_split_ratio: float = 0.9):

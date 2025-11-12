@@ -1,4 +1,4 @@
-from .datasets.ImageNetV2 import save_split_indices
+from datasets.ImageNetV2 import save_split_indices
 
 if __name__ == "__main__":
     root_dir = "./data/imagenetv2"
