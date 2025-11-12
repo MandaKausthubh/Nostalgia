@@ -15,4 +15,4 @@
 outputs/
 PROMPT.md
 PROMPT_VISUALISATIONS.md
-config/
+./config/
